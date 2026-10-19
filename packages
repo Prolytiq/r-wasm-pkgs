@@ -76,3 +76,17 @@ viridisLite
 vroom
 withr
 xml2
+lattice
+MASS
+Matrix
+nlme
+survival
+mgcv
+cluster
+nnet
+foreign
+rpart
+boot
+class
+KernSmooth
+spatial
