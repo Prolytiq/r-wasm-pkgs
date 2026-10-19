@@ -10,4 +10,8 @@ CRAN-like binary repository to GitHub Pages:
 
 https://prolytiq.github.io/r-wasm-pkgs/
 
+The list covers every package the /biostatistics script catalogue can generate.
+`rjags` (and its dependent `gemtc`) are NOT buildable for WebAssembly: they
+require the external JAGS program, which cannot run in a browser.
+
 No source code of the platform lives here — only package references.
