@@ -90,3 +90,8 @@ boot
 class
 KernSmooth
 spatial
+plyr
+forcats
+Rglpk
+slam
+lazyeval
