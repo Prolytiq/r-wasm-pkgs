@@ -83,8 +83,8 @@ jobs:
     uses: ./.github/workflows/build-batch.yml
     with:
       packages: ${{ needs.plan.outputs.build }}
-      time-cap-minutes: ${{ inputs.time-cap-minutes }}
-      per-package-timeout-minutes: ${{ inputs.per-package-timeout-minutes }}
+      time-cap-minutes: ${{ fromJSON(inputs.time-cap-minutes) }}
+      per-package-timeout-minutes: ${{ fromJSON(inputs.per-package-timeout-minutes) }}
       request-id: queue-${{ github.run_id }}
 
   record:
