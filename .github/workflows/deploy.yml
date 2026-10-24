@@ -32,11 +32,13 @@ jobs:
   deploy:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-    # One deployment at a time. A newer pending deploy replaces an older
-    # pending one, which is fine: every deploy publishes the latest `site`.
+    # One deployment at a time; queue (FIFO, up to 100) instead of the default
+    # "newer pending replaces older pending", so concurrent builders' deploys
+    # all complete (each publishes the latest `site`).
     concurrency:
       group: github-pages
       cancel-in-progress: false
+      queue: max
     permissions:
       contents: read
       pages: write
