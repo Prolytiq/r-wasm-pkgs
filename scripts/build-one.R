@@ -14,7 +14,10 @@ pkg <- args[1]
 repo_dir <- args[2]
 stopifnot(grepl("^[A-Za-z][A-Za-z0-9.]*[A-Za-z0-9]$", pkg), dir.exists(repo_dir))
 
+# rwasm sets its options (webR version, root) when its namespace loads.
+loadNamespace("rwasm")
 r_version <- R_system_version(getOption("rwasm.webr_version"))
+if (length(r_version) != 1) stop("rwasm.webr_version option is not set")
 bin <- file.path(repo_dir, "bin", "emscripten", "contrib",
                  paste0(r_version$major, ".", r_version$minor))
 src <- file.path(repo_dir, "src", "contrib")
