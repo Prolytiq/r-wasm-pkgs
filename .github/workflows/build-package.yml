@@ -1,7 +1,8 @@
 # On-demand WebAssembly package build, requested through a GitHub issue.
 #
-# Request: open an issue titled `build: pkgA[, pkgB]` (or use the
-# "Build a package" issue form) carrying the `build-package` label.
+# Request: open an issue titled `build: pkgname` (or use the "Build a package"
+# issue form) carrying the `build-package` label. One package per issue is
+# the convention; `build: pkgA, pkgB` also works.
 #
 # Access gate: only users with triage/write access can apply labels, so only
 # they can start a build. An issue from anyone else is ignored until a
@@ -12,11 +13,13 @@
 # into `run:` scripts with ${{ }} -- they reach the shell only through `env:`
 # and every package name is validated against the CRAN name regex before use.
 #
-# Flow: compute the recursive closure (scripts/closure.R) -> append the
-# missing names to `packages` -> commit + push to main -> explicitly
-# dispatch deploy.yml (pushes made with GITHUB_TOKEN do not trigger other
-# workflows; workflow_dispatch is the documented exception) -> watch that run
-# -> verify the package on GitHub Pages -> comment, close / label build-failed.
+# Flow: parse + validate -> build closure (scripts/closure.R --to-build:
+# Depends+Imports+LinkingTo minus base minus anything already served by this
+# repo, repo.r-wasm.org or jags-wasm) -> nothing to build: comment where it
+# is available and close -> otherwise build-batch.yml builds only those
+# packages (deps first), commits them to the `site` store and deploys Pages
+# -> comment per-package results -> verify the requested packages in the live
+# PACKAGES index -> close, or label `build-failed` and leave open.
 
 name: On-demand package build
 
@@ -24,31 +27,34 @@ on:
   issues:
     types: [opened, labeled]
 
-permissions:
-  contents: write # commit the updated `packages` file to main
-  issues: write # comment, label, close
-  actions: write # dispatch deploy.yml and read its runs/logs
+permissions: {}
 
 concurrency:
   group: build-package-issue-${{ github.event.issue.number }}
   cancel-in-progress: false
 
 jobs:
-  build:
+  request:
     # `labeled` with build-package is the normal path. `opened` only matters
     # when the label was present at creation; the dedupe step below skips it
     # when a `labeled` event was also emitted for the same issue.
     if: >-
       (github.event.action == 'labeled' && github.event.label.name == 'build-package') ||
       (github.event.action == 'opened' && contains(github.event.issue.labels.*.name, 'build-package'))
-    runs-on: ubuntu-latest
-    timeout-minutes: 240
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      status: ${{ steps.closure.outputs.status }}
+      pkgs: ${{ steps.parse.outputs.pkgs }}
+      build: ${{ steps.closure.outputs.build }}
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
       ISSUE: ${{ github.event.issue.number }}
       EVENT_ACTION: ${{ github.event.action }}
-      PAGES_PACKAGES: https://prolytiq.github.io/r-wasm-pkgs/bin/emscripten/contrib/4.6/PACKAGES
     steps:
       - name: Skip duplicate trigger
         id: dedupe
@@ -111,7 +117,7 @@ jobs:
                   fh.write("\n".join(f"- `{s}`" for s in safe) + "\n")
               elif not ok:
                   fh.write("Rejected: no package names found. Use the title "
-                           "`build: pkgA, pkgB` or a body line `packages: pkgA, pkgB`.\n")
+                           "`build: pkgname` or a body line `packages: pkgA, pkgB`.\n")
 
       - name: Reject invalid request
         if: steps.dedupe.outputs.skip == 'false' && steps.parse.outputs.valid != 'true'
@@ -129,149 +135,152 @@ jobs:
         with:
           use-public-rspm: true
 
-      - name: Compute recursive dependency closure
+      - name: Compute what must be built
         if: steps.dedupe.outputs.skip == 'false' && steps.parse.outputs.valid == 'true'
         id: closure
         env:
           PKGS: ${{ steps.parse.outputs.pkgs }}
         run: |
-          start=$(date +%s)
           # PKGS contains only regex-validated names; word splitting is intended.
-          if ! Rscript scripts/closure.R $PKGS > /tmp/closure.txt 2> /tmp/closure.err; then
+          if ! Rscript scripts/closure.R --to-build --report /tmp/report.tsv $PKGS > /tmp/build.txt 2> /tmp/closure.err; then
             { echo "Dependency closure failed for \`$PKGS\`:"; echo; echo '```'; tail -20 /tmp/closure.err; echo '```'; } > /tmp/c.md
             gh issue comment "$ISSUE" --body-file /tmp/c.md
+            gh issue edit "$ISSUE" --add-label build-failed
             exit 1
           fi
-          echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
-          # Missing = closure members not already listed in `packages` (keep file order, append).
-          grep -vxF -f <(sed 's/[[:space:]]*$//' packages | grep -v '^$') /tmp/closure.txt > /tmp/missing.txt || true
+          cat /tmp/report.tsv
+          echo "build=$(paste -sd' ' /tmp/build.txt)" >> "$GITHUB_OUTPUT"
           # Non-numeric status on purpose: Actions expressions coerce a skipped step's
           # null output to 0, so `== '0'` would match when this step never ran.
-          if [ -s /tmp/missing.txt ]; then echo "status=missing"; else echo "status=complete"; fi >> "$GITHUB_OUTPUT"
-          echo "closure=$(wc -l < /tmp/closure.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
-          echo "Closure:"; cat /tmp/closure.txt; echo "Missing:"; cat /tmp/missing.txt
-
-      - name: Nothing to add
-        if: steps.closure.outputs.status == 'complete'
-        env:
-          PKGS: ${{ steps.parse.outputs.pkgs }}
-        run: |
-          { echo "\`$PKGS\` and its full dependency closure ($(wc -l < /tmp/closure.txt) packages) are already listed in \`packages\` -- nothing to build."
-            echo; echo "Repo: $PAGES_PACKAGES"; } > /tmp/c.md
+          if [ -s /tmp/build.txt ]; then echo "status=build"; else echo "status=available"; fi >> "$GITHUB_OUTPUT"
+          {
+            echo "Requested: \`$PKGS\`"
+            echo
+            for p in $PKGS; do
+              src=$(awk -F'\t' -v p="$p" '$1==p{print $2}' /tmp/report.tsv)
+              case $src in
+                build) echo "- \`$p\`: not in any wasm repo yet -> **will be built here**" ;;
+                prolytiq) echo "- \`$p\`: already available from https://prolytiq.github.io/r-wasm-pkgs/" ;;
+                r-wasm) echo "- \`$p\`: already available from https://repo.r-wasm.org/" ;;
+                jags-wasm) echo "- \`$p\`: already available from https://prolytiq.github.io/jags-wasm/" ;;
+              esac
+            done
+            if [ -s /tmp/build.txt ]; then
+              echo
+              echo "To build (deps first, $(wc -l < /tmp/build.txt | tr -d ' ')): \`$(paste -sd' ' /tmp/build.txt)\`"
+              echo "Closure members already served elsewhere: $(awk -F'\t' '$2!="build"' /tmp/report.tsv | wc -l | tr -d ' ') (prolytiq $(grep -c $'\tprolytiq$' /tmp/report.tsv || true), r-wasm $(grep -c $'\tr-wasm$' /tmp/report.tsv || true), jags-wasm $(grep -c $'\tjags-wasm$' /tmp/report.tsv || true))."
+              echo
+              echo "Starting the incremental build: $GITHUB_SERVER_URL/$GH_REPO/actions/runs/$GITHUB_RUN_ID"
+            fi
+          } > /tmp/c.md
           gh issue comment "$ISSUE" --body-file /tmp/c.md
+
+      - name: Nothing to build
+        if: steps.closure.outputs.status == 'available'
+        run: |
+          gh issue comment "$ISSUE" --body "Nothing to build: everything requested is already installable from the repos the app uses (see above). Closing."
           gh issue close "$ISSUE" --reason completed
 
-      - name: Commit and push to main
-        if: steps.closure.outputs.status == 'missing'
-        id: commit
-        env:
-          PKGS: ${{ steps.parse.outputs.pkgs }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Ensure trailing newline before appending.
-          [ -n "$(tail -c1 packages)" ] && echo >> packages
-          cat /tmp/missing.txt >> packages
-          added=$(wc -l < /tmp/missing.txt | tr -d ' ')
-          requested_added=$(grep -cxF -f <(tr ' ' '\n' <<< "$PKGS") /tmp/missing.txt || true)
-          deps=$(( added - requested_added ))
-          list=$(tr ' ' '\n' <<< "$PKGS" | paste -sd, - | sed 's/,/, /g')
-          git add packages
-          git commit -m "feat: add ${list} (+${deps} deps) — on-demand build #${ISSUE}"
-          for i in 1 2 3 4 5; do
-            git push origin HEAD:main && break
-            git pull --rebase origin main
-          done
-          sha=$(git rev-parse HEAD)
-          git ls-remote origin refs/heads/main | grep -q "^$sha" || { echo "push failed"; exit 1; }
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          { echo "Recursive closure (Depends + Imports + LinkingTo, base packages excluded) for \`$PKGS\`:"
-            echo; echo '```'; paste -sd' ' /tmp/closure.txt; echo '```'
-            echo "Added to \`packages\` (${added}): \`$(paste -sd' ' /tmp/missing.txt)\`"
-            echo; echo "Commit: $sha. Dispatching the deploy workflow (full repo rebuild, typically 25-40 min)..."; } > /tmp/c.md
-          gh issue comment "$ISSUE" --body-file /tmp/c.md
+  build:
+    needs: request
+    if: needs.request.outputs.status == 'build'
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/build-batch.yml
+    with:
+      packages: ${{ needs.request.outputs.build }}
+      time-cap-minutes: 150
+      request-id: issue-${{ github.event.issue.number }}
 
-      - name: Dispatch deploy.yml and wait
-        if: steps.commit.outputs.sha != ''
-        id: deploy
-        env:
-          SHA: ${{ steps.commit.outputs.sha }}
-        run: |
-          gh workflow run deploy.yml --ref main
-          run_id=""
-          for i in $(seq 1 30); do
-            sleep 10
-            run_id=$(gh run list --workflow deploy.yml --event workflow_dispatch --commit "$SHA" \
-                       --json databaseId -q '.[0].databaseId')
-            [ -n "$run_id" ] && break
-          done
-          if [ -z "$run_id" ]; then
-            gh issue comment "$ISSUE" --body "Could not find the dispatched deploy run for $SHA."
-            gh issue edit "$ISSUE" --add-label build-failed
-            exit 1
-          fi
-          url="https://github.com/$GH_REPO/actions/runs/$run_id"
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "url=$url" >> "$GITHUB_OUTPUT"
-          gh issue comment "$ISSUE" --body "Deploy run started: $url"
-          start=$(date +%s)
-          if gh run watch "$run_id" --exit-status --interval 60 > /dev/null; then
-            echo "result=success" >> "$GITHUB_OUTPUT"
-          else
-            echo "result=failure" >> "$GITHUB_OUTPUT"
-          fi
-          echo "minutes=$(( ($(date +%s) - start) / 60 ))" >> "$GITHUB_OUTPUT"
+  report:
+    needs: [request, build]
+    if: always() && needs.request.outputs.status == 'build'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      ISSUE: ${{ github.event.issue.number }}
+      PKGS: ${{ needs.request.outputs.pkgs }}
+      BUILD: ${{ needs.request.outputs.build }}
+      OK: ${{ needs.build.outputs.ok }}
+      BUILD_RESULT: ${{ needs.build.result }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      PAGES_PACKAGES: https://prolytiq.github.io/r-wasm-pkgs/bin/emscripten/contrib/4.6/PACKAGES
+    steps:
+      - uses: actions/download-artifact@v4
+        id: dl
+        continue-on-error: true
+        with:
+          name: build-results
+          path: results
 
-      - name: Report deploy failure
-        if: steps.deploy.outputs.result == 'failure'
-        env:
-          RUN_ID: ${{ steps.deploy.outputs.run_id }}
-          URL: ${{ steps.deploy.outputs.url }}
+      - name: Comment per-package results
         run: |
-          { echo "Deploy run **failed**: $URL"; echo; echo "Log tail (failed steps):"; echo
-            echo '```'; { gh run view "$RUN_ID" --log-failed | tail -80 | cut -c1-300; } || true; echo '```'; } > /tmp/c.md
-          gh issue comment "$ISSUE" --body-file /tmp/c.md
-          gh issue edit "$ISSUE" --add-label build-failed
-          exit 1
-
-      - name: Verify on GitHub Pages
-        if: steps.deploy.outputs.result == 'success'
-        env:
-          PKGS: ${{ steps.parse.outputs.pkgs }}
-          RUN_ID: ${{ steps.deploy.outputs.run_id }}
-          URL: ${{ steps.deploy.outputs.url }}
-          MINUTES: ${{ steps.deploy.outputs.minutes }}
-        run: |
-          # Pages is served behind a CDN with a ~10 min cache; poll up to ~15 min.
-          found=false
-          for i in $(seq 1 30); do
-            curl -fsSL "$PAGES_PACKAGES?nocache=$(date +%s)" -o /tmp/PACKAGES || true
-            missing_now=""
-            for p in $PKGS; do
-              grep -qxF "Package: $p" /tmp/PACKAGES || missing_now="$missing_now $p"
-            done
-            if [ -z "$missing_now" ]; then found=true; break; fi
-            echo "Not yet on Pages:$missing_now (attempt $i)"; sleep 30
-          done
-          if $found; then
-            { echo "Build **succeeded** ($URL, ~${MINUTES} min). Verified on $PAGES_PACKAGES:"; echo
-              for p in $PKGS; do
-                echo '```'; awk -v p="Package: $p" '$0==p{f=1} f&&/^$/{exit} f' /tmp/PACKAGES; echo '```'
+          {
+            echo "Build run: $RUN_URL (builder job: **$BUILD_RESULT**)"
+            echo
+            if [ -f results/summary.md ]; then
+              cat results/summary.md
+              for f in $(awk -F'\t' 'NR>1 && $2=="failed"{print $1}' results/results.tsv); do
+                [[ $f =~ ^[A-Za-z][A-Za-z0-9.]*[A-Za-z0-9]$ ]] || continue
+                echo; echo "<details><summary><code>$f</code> log tail (last 40 lines)</summary>"; echo; echo '```'
+                tail -n 40 "results/logs/$f.log" | cut -c1-300 | sed 's/```/` ` `/g'
+                echo '```'; echo "</details>"
               done
-              echo; echo "Install in WebR: \`webr::install(\"$(echo $PKGS | cut -d' ' -f1)\", repos = c(\"https://prolytiq.github.io/r-wasm-pkgs/\", \"https://repo.r-wasm.org/\"))\`"
-            } > /tmp/c.md
-            gh issue comment "$ISSUE" --body-file /tmp/c.md
-            gh issue close "$ISSUE" --reason completed
-          else
-            # Deploy succeeded but the package is absent: its own build most likely failed
-            # (the repo build continues past per-package failures). Show related log lines.
-            { echo "Deploy run succeeded ($URL) but \`$missing_now\` did not appear in $PAGES_PACKAGES after ~15 min."
-              echo "Most likely the package failed to compile for wasm (e.g. needs a system library not in the webr image)."
-              echo; echo "Log lines mentioning it:"; echo; echo '```'
-              pat=$(echo $missing_now | sed 's/ /|/g')
-              { gh run view "$RUN_ID" --log | grep -iE "$pat" | tail -80 | cut -c1-300; } || true
-              echo '```'; } > /tmp/c.md
-            gh issue comment "$ISSUE" --body-file /tmp/c.md
+            else
+              echo "No results artifact: the builder did not get to report (see the run log)."
+            fi
+          } > /tmp/c.md
+          gh issue comment "$ISSUE" --body-file /tmp/c.md
+
+      - name: Verify on GitHub Pages and close
+        run: |
+          # Only the requested packages that had to be built here are checked;
+          # the others were reported as available elsewhere.
+          want=""
+          for p in $PKGS; do
+            case " $BUILD " in *" $p "*) want="$want $p" ;; esac
+          done
+          notok=""
+          for p in $want; do case " $OK " in *" $p "*) ;; *) notok="$notok $p" ;; esac; done
+          if [ -n "$notok" ]; then
+            gh issue comment "$ISSUE" --body "Build **failed** for:\`$notok\`. Labelled \`build-failed\`; remove and re-add \`build-package\` to retry after a fix."
             gh issue edit "$ISSUE" --add-label build-failed
             exit 1
           fi
+          # Pages is served behind a CDN (~10 min cache); poll up to ~20 min.
+          found=false
+          for i in $(seq 1 40); do
+            if curl -fsSL "$PAGES_PACKAGES?nocache=$(date +%s)" -o /tmp/PACKAGES; then
+              missing_now=""
+              for p in $want; do grep -qxF "Package: $p" /tmp/PACKAGES || missing_now="$missing_now $p"; done
+              if [ -z "$missing_now" ]; then found=true; break; fi
+              echo "Not yet on Pages:$missing_now (attempt $i)"
+            fi
+            sleep 30
+          done
+          if ! $found; then
+            gh issue comment "$ISSUE" --body "Built, but \`$missing_now\` did not appear in $PAGES_PACKAGES after ~20 min (deploy problem?). Labelled \`build-failed\`."
+            gh issue edit "$ISSUE" --add-label build-failed
+            exit 1
+          fi
+          first=$(echo $want | cut -d' ' -f1)
+          {
+            echo "Verified on $PAGES_PACKAGES ($(grep -c '^Package:' /tmp/PACKAGES) packages in the index):"; echo
+            for p in $want; do
+              echo '```'; awk -v p="Package: $p" '$0==p{f=1} f&&/^$/{exit} f' /tmp/PACKAGES; echo '```'
+            done
+            echo
+            echo "Install in WebR (deps such as rjags come from jags-wasm):"
+            echo '```r'
+            echo "webr::install(\"$first\", repos = c(\"https://prolytiq.github.io/r-wasm-pkgs/\", \"https://prolytiq.github.io/jags-wasm/\", \"https://repo.r-wasm.org/\"))"
+            echo '```'
+          } > /tmp/c.md
+          gh issue comment "$ISSUE" --body-file /tmp/c.md
+          gh issue edit "$ISSUE" --remove-label build-failed 2>/dev/null || true
+          gh issue close "$ISSUE" --reason completed

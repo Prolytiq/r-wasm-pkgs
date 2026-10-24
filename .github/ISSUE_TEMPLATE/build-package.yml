@@ -1,15 +1,17 @@
 name: Build a package for WebAssembly
-description: Request an on-demand WebR (wasm) build of one or more CRAN packages.
+description: Request an on-demand WebR (wasm) build of a CRAN package.
 title: "build: "
 labels: ["build-package"]
 body:
   - type: markdown
     attributes:
       value: |
-        Put the CRAN package name(s) in the title after `build:` (e.g. `build: pkgA, pkgB`)
-        and/or in the field below. The workflow computes the full recursive dependency
-        closure (Depends + Imports + LinkingTo), adds the missing names to `packages`,
-        rebuilds the repo and reports back here (typically 25-40 min).
+        Put ONE CRAN package name in the title after `build:` (e.g. `build: altmeta`)
+        and/or in the field below. The workflow skips everything already served by this
+        repo, repo.r-wasm.org or jags-wasm, builds only the rest (deps first,
+        incrementally, usually a few minutes per package) and reports back here.
+        The issue closes itself once the package is live; failures get the log tail
+        and the `build-failed` label.
 
         Note: the `build-package` label is only applied automatically for users with
         triage/write access; otherwise a maintainer must add it to start the build.
@@ -17,7 +19,7 @@ body:
     id: packages
     attributes:
       label: Packages
-      description: CRAN package names, comma-separated.
-      placeholder: "pkgA, pkgB"
+      description: CRAN package name (several may be comma-separated).
+      placeholder: "pkgname"
     validations:
       required: true

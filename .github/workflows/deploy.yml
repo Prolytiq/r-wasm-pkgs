@@ -1,15 +1,83 @@
-# Workflow derived from https://github.com/r-wasm/actions/tree/v3/examples
-on:
-  push:
-    branches: [main]
-  workflow_dispatch: {}
+# Deploy GitHub Pages from the `site` branch (the durable store of built
+# wasm binaries). It does NOT build anything: builds are incremental and done
+# by build-batch.yml, which commits each built package to `site` and then
+# calls this workflow.
+#
+# PACKAGES / PACKAGES.gz / PACKAGES.rds are not stored on `site` (that keeps
+# concurrent builders conflict-free); they are regenerated here from the
+# .tgz / .tar.gz files, the same way rwasm does (tools::write_PACKAGES).
+#
+# Safety: the deploy refuses to publish an index with fewer binary packages
+# than the live one (guards against an empty/broken store clobbering Pages)
+# unless `allow-shrink` is set.
 
-name: Build and deploy wasm R package repository
+name: Deploy Pages from the site store
+
+on:
+  workflow_dispatch:
+    inputs:
+      allow-shrink:
+        description: Allow publishing fewer packages than currently live
+        type: boolean
+        default: false
+  workflow_call:
+    outputs:
+      count:
+        description: Number of binary packages published
+        value: ${{ jobs.deploy.outputs.count }}
+
+permissions: {}
 
 jobs:
-  deploy-cran-repo:
-    uses: r-wasm/actions/.github/workflows/deploy-cran-repo.yml@v3
+  deploy:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # One deployment at a time. A newer pending deploy replaces an older
+    # pending one, which is fine: every deploy publishes the latest `site`.
+    concurrency:
+      group: github-pages
+      cancel-in-progress: false
     permissions:
-      repository-projects: read
+      contents: read
       pages: write
       id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    outputs:
+      count: ${{ steps.index.outputs.count }}
+    env:
+      LIVE: https://prolytiq.github.io/r-wasm-pkgs/bin/emscripten/contrib/4.6/PACKAGES
+      ALLOW_SHRINK: ${{ inputs.allow-shrink && 'true' || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: site
+          path: _site
+          fetch-depth: 1
+
+      - uses: r-lib/actions/setup-r@v2
+
+      - name: Generate PACKAGES indexes
+        id: index
+        working-directory: _site
+        run: |
+          rm -rf .git .gitignore
+          Rscript -e 'tools::write_PACKAGES("src/contrib", verbose = FALSE)' \
+                  -e 'tools::write_PACKAGES("bin/emscripten/contrib/4.6", type = "mac.binary", verbose = FALSE)'
+          n=$(grep -c '^Package:' bin/emscripten/contrib/4.6/PACKAGES)
+          live=$(curl -fsSL "$LIVE?nocache=$(date +%s)" | grep -c '^Package:' || true)
+          live=${live:-0}
+          echo "Store: $n binary packages; live: $live"
+          if [ "$n" -lt "$live" ] && [ "$ALLOW_SHRINK" != "true" ]; then
+            echo "::error::refusing to publish $n packages (< $live live)"; exit 1
+          fi
+          echo "count=$n" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

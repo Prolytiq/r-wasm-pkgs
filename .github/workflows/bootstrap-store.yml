@@ -1,0 +1,100 @@
+# One-off: create the `site` branch (durable store of built wasm binaries)
+# from what GitHub Pages serves today, so incremental builds start from the
+# current repo instead of rebuilding everything.
+#
+# Source: the `github-pages` artifact of a successful run (default: the
+# latest successful run of this repo's old full-rebuild deploy). Every binary
+# is then checked against the LIVE index: same package set and same MD5sum,
+# otherwise nothing is pushed.
+
+name: Bootstrap the site store
+
+on:
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: Run id holding the github-pages artifact (empty = latest successful deploy.yml run)
+        type: string
+        default: ""
+      force:
+        description: Overwrite an existing `site` branch
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RUN_ID: ${{ inputs.run-id }}
+      FORCE: ${{ inputs.force && 'true' || 'false' }}
+      LIVE: https://prolytiq.github.io/r-wasm-pkgs
+    steps:
+      - name: Refuse to overwrite an existing store
+        run: |
+          if git ls-remote --exit-code "https://github.com/$GH_REPO" refs/heads/site >/dev/null && [ "$FORCE" != "true" ]; then
+            echo "::error::branch 'site' already exists (set force to overwrite)"; exit 1
+          fi
+
+      - name: Download the Pages artifact
+        run: |
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list --workflow deploy.yml --status success --limit 20 --json databaseId,createdAt \
+                     -q 'sort_by(.createdAt) | reverse | .[].databaseId' | while read -r id; do
+                       if gh api "repos/$GH_REPO/actions/runs/$id/artifacts" -q '.artifacts[] | select(.name=="github-pages" and (.expired|not)) | .id' | grep -q .; then echo "$id"; break; fi
+                     done)
+          fi
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo "::error::no usable run id"; exit 1; }
+          echo "Using run $RUN_ID"
+          gh run download "$RUN_ID" -n github-pages -D dl
+          mkdir site && tar -xf dl/artifact.tar -C site
+          rm -f site/bin/emscripten/contrib/4.6/PACKAGES* site/src/contrib/PACKAGES*
+          find site -maxdepth 4 -type d
+
+      - name: Verify against the live index (package set + MD5)
+        run: |
+          curl -fsSL "$LIVE/bin/emscripten/contrib/4.6/PACKAGES?nocache=$(date +%s)" -o live.PACKAGES
+          python3 - <<'EOF'
+          import hashlib, os, re, sys
+          blocks = open("live.PACKAGES").read().strip().split("\n\n")
+          live = {}
+          for b in blocks:
+              f = dict(re.findall(r"^(\w+): (.*)$", b, re.M))
+              live[f["File"]] = f["MD5sum"]
+          d = "site/bin/emscripten/contrib/4.6"
+          have = {x for x in os.listdir(d) if x.endswith(".tgz")}
+          missing = set(live) - have
+          bad = [x for x in live if x in have and hashlib.md5(open(f"{d}/{x}", "rb").read()).hexdigest() != live[x]]
+          print(f"live {len(live)} binaries; artifact {len(have)}; missing {len(missing)}; md5 mismatch {len(bad)}")
+          if missing or bad:
+              print("missing:", sorted(missing)); print("mismatch:", bad); sys.exit(1)
+          EOF
+
+      - name: Commit and push the orphan `site` branch
+        working-directory: site
+        run: |
+          git init -q -b site
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Indexes are generated at deploy time (deploy.yml), never stored.
+          printf 'PACKAGES\nPACKAGES.gz\nPACKAGES.rds\n' > .gitignore
+          cat > README.md <<'EOF'
+          # site store
+
+          Built WebR (wasm) binaries served by GitHub Pages. Written only by
+          `.github/workflows/build-batch.yml` (one commit per built package) and
+          published by `deploy.yml`, which regenerates the PACKAGES indexes.
+          Do not edit by hand.
+          EOF
+          git add -A
+          git commit -q -m "feat: bootstrap site store from Pages ($(ls bin/emscripten/contrib/4.6/*.tgz | wc -l) binaries)"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git"
+          if [ "$FORCE" = true ]; then git push -q --force origin site; else git push -q origin site; fi
+          git log --oneline -1

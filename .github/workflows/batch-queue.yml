@@ -1,0 +1,111 @@
+# Priority queue ("Frente 2"): build the next N most-downloaded CRAN packages
+# that no wasm repo serves yet (gap = CRAN minus repo.r-wasm.org, this repo
+# and jags-wasm), deps first, with the incremental builder.
+#
+# State lives in queue/ on main (see scripts/queue.py):
+#   queue/priority.tsv  gap ordered by cranlogs last-month downloads
+#   queue/status.tsv    built / failed (+reason) / blocked; absent = pending
+# Failed/blocked packages are never re-picked automatically; delete their row
+# from status.tsv to retry.
+#
+# Manual only (workflow_dispatch) to keep CI cost predictable.
+
+name: Build queue batch
+
+on:
+  workflow_dispatch:
+    inputs:
+      count:
+        description: Number of pending queue entries to pick (their missing deps are added)
+        type: number
+        default: 30
+      time-cap-minutes:
+        description: No new package starts after this many minutes (max 170)
+        type: number
+        default: 150
+      per-package-timeout-minutes:
+        description: Per-package build timeout (minutes)
+        type: number
+        default: 20
+
+permissions: {}
+
+concurrency:
+  group: batch-queue
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write # commit refreshed queue/priority.tsv and blocked rows
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+    env:
+      RAW_COUNT: ${{ inputs.count }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - name: Refresh queue, pick, expand deps, drop known failures
+        id: plan
+        run: |
+          [[ "$RAW_COUNT" =~ ^[0-9]+$ ]] && [ "$RAW_COUNT" -ge 1 ] && [ "$RAW_COUNT" -le 100 ] \
+            || { echo "::error::count must be 1..100"; exit 1; }
+          cat > "$RUNNER_TEMP/plan.sh" <<'EOF'
+          set -euo pipefail
+          python3 -I scripts/queue.py refresh
+          python3 -I scripts/queue.py pick "$RAW_COUNT" > "$RUNNER_TEMP/picks.txt"
+          echo "Picked:"; paste -sd' ' "$RUNNER_TEMP/picks.txt"
+          if [ -s "$RUNNER_TEMP/picks.txt" ]; then
+            Rscript scripts/closure.R --to-build --tsv $(cat "$RUNNER_TEMP/picks.txt") > "$RUNNER_TEMP/order.tsv"
+          else
+            : > "$RUNNER_TEMP/order.tsv"
+          fi
+          python3 -I scripts/queue.py filter "$RUNNER_TEMP/order.tsv" "$RUNNER_TEMP/keep.txt" "$RUN_URL"
+          EOF
+          scripts/commit-main.sh "chore(queue): refresh priority list and plan batch" bash "$RUNNER_TEMP/plan.sh"
+          echo "To build: $(cat "$RUNNER_TEMP/keep.txt")"
+          echo "build=$(cat "$RUNNER_TEMP/keep.txt" | xargs)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.build != ''
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/build-batch.yml
+    with:
+      packages: ${{ needs.plan.outputs.build }}
+      time-cap-minutes: ${{ inputs.time-cap-minutes }}
+      per-package-timeout-minutes: ${{ inputs.per-package-timeout-minutes }}
+      request-id: queue-${{ github.run_id }}
+
+  record:
+    needs: [plan, build]
+    if: always() && needs.plan.outputs.build != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-results
+          path: ${{ runner.temp }}/results
+      - name: Record results in queue/status.tsv
+        run: |
+          scripts/commit-main.sh "chore(queue): record batch results" \
+            python3 -I scripts/queue.py record "$RUNNER_TEMP/results/results.tsv" "$RUN_URL"
+          { echo '```'; python3 -I scripts/queue.py stats; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"

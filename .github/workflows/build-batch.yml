@@ -1,0 +1,155 @@
+# Incremental builder: build ONLY the given packages for WebAssembly, add
+# them to the `site` store branch (one commit per built package, so a
+# cancelled/timed-out run keeps its progress), append the successes to
+# `packages`, then deploy Pages from the store.
+#
+# Inputs are package NAMES that must actually be built -- compute them with
+# `Rscript scripts/closure.R --to-build pkg` (skips everything already served
+# by this repo, repo.r-wasm.org or jags-wasm). They are re-validated here and
+# built deps-first; a package whose in-batch dependency failed is skipped.
+#
+# Results: job outputs ok / failed / deferred (space-separated names) and the
+# artifact `build-results` (results.tsv, summary.md, logs/<pkg>.log).
+#
+# Callers: build-package.yml (issues), batch-queue.yml (priority queue), or
+# manual workflow_dispatch.
+
+name: Build packages (incremental)
+
+on:
+  workflow_call:
+    inputs:
+      packages:
+        description: Package names to build (space/comma separated)
+        type: string
+        required: true
+      time-cap-minutes:
+        description: No new package starts after this many minutes (max 170)
+        type: number
+        default: 150
+      request-id:
+        description: Free-form id for commit messages / logs (e.g. issue-12)
+        type: string
+        default: ""
+      per-package-timeout-minutes:
+        description: Per-package build timeout (minutes)
+        type: number
+        default: 45
+    outputs:
+      ok:
+        value: ${{ jobs.build.outputs.ok }}
+      failed:
+        value: ${{ jobs.build.outputs.failed }}
+      deferred:
+        value: ${{ jobs.build.outputs.deferred }}
+      seconds:
+        value: ${{ jobs.build.outputs.seconds }}
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: Package names to build (space/comma separated)
+        type: string
+        required: true
+      time-cap-minutes:
+        description: No new package starts after this many minutes (max 170)
+        type: number
+        default: 150
+      request-id:
+        description: Free-form id for commit messages / logs
+        type: string
+        default: ""
+      per-package-timeout-minutes:
+        description: Per-package build timeout (minutes)
+        type: number
+        default: 45
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # time cap (<= 170) + last package overrun + setup.
+    timeout-minutes: 220
+    permissions:
+      contents: write # push to `site` and `packages` on main
+    outputs:
+      ok: ${{ steps.build.outputs.ok }}
+      failed: ${{ steps.build.outputs.failed }}
+      deferred: ${{ steps.build.outputs.deferred }}
+      seconds: ${{ steps.build.outputs.seconds }}
+    env:
+      RAW_PKGS: ${{ inputs.packages }}
+      RAW_CAP: ${{ inputs.time-cap-minutes }}
+      REQUEST_ID: ${{ inputs.request-id }}
+      WEBR_IMAGE: ghcr.io/r-wasm/webr:main
+      RAW_PER_PKG: ${{ inputs.per-package-timeout-minutes }}
+    steps:
+      - name: Validate inputs
+        id: v
+        shell: python3 {0}
+        run: |
+          import os, re, sys
+          raw = os.environ.get("RAW_PKGS", "")
+          toks = [t for t in re.split(r"[,\s]+", raw) if t]
+          name_re = re.compile(r"^[A-Za-z][A-Za-z0-9.]*[A-Za-z0-9]$")
+          bad = [t for t in toks if not name_re.match(t)]
+          if bad or not toks:
+              print("::error::invalid or empty package list"); sys.exit(1)
+          cap = int(float(os.environ.get("RAW_CAP") or 150))
+          cap = max(5, min(cap, 170))
+          per = max(2, min(int(float(os.environ.get("RAW_PER_PKG") or 45)), 90))
+          rid = re.sub(r"[^A-Za-z0-9._-]", "", os.environ.get("REQUEST_ID", ""))[:40]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"pkgs={' '.join(dict.fromkeys(toks))}\ncap={cap}\nper={per}\nrid={rid}\n")
+
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/checkout@v4
+        with:
+          ref: site
+          path: _site
+          fetch-depth: 1
+
+      - name: Build
+        id: build
+        env:
+          PKGS: ${{ steps.v.outputs.pkgs }}
+          CAP_MIN: ${{ steps.v.outputs.cap }}
+          PER_PKG_MIN: ${{ steps.v.outputs.per }}
+        run: scripts/build-batch.sh
+
+      - name: Job summary
+        if: always()
+        run: |
+          [ -f results/summary.md ] && cat results/summary.md >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: build-results
+          path: results/
+          if-no-files-found: warn
+
+      - name: Record built packages in `packages`
+        if: steps.build.outputs.ok != ''
+        env:
+          OK: ${{ steps.build.outputs.ok }}
+          RID: ${{ steps.v.outputs.rid }}
+        run: |
+          # OK holds names validated by build-batch.sh; word splitting intended.
+          scripts/commit-main.sh "feat: add $(echo $OK | sed 's/ /, /g') (wasm)${RID:+ — $RID}" \
+            scripts/append-packages.sh $OK
+
+  deploy:
+    needs: build
+    # Deploy even after a failure/timeout: earlier packages were already
+    # committed to `site`. The deploy itself refuses to shrink the index.
+    if: always()
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/deploy.yml
