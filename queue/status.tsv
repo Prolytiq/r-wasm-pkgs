@@ -1,1 +1,32 @@
 package	status	reason	updated	run
+arrow	built	25.0.1	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+bnlearn	failed	gcc: error: USE_BZIP2=1: linker input file not found: No such file or directory	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+deSolve	built	1.42	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+gap	built	1.15.2	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+locfit	failed	gcc: error: USE_BZIP2=1: linker input file not found: No such file or directory	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+mclust	built	6.1.3	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+muhaz	built	1.2.6.5	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+ncdf4	failed	/usr/include/stdio.h:28:10: fatal error: 'bits/libc-header-start.h' file not found	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+odbc	failed	<stdin>:1:10: fatal error: 'sql.h' file not found	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+pak	built	0.11.1	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+pbdZMQ	failed	checking whether we are cross compiling... configure: error: in `/tmp/RtmpVtD05p/filea89b4cc1daae/pbdZMQ/src/zmqsrc':	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+pingr	failed	wasm-ld: error: unable to find library -lresolv	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+qs2	built	0.3.1	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+Rcmdr	built	2.15.0	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+Rfast	built	2.1.5.2	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+rJava	failed	checking whether JNI programs can be compiled... configure.orig: error: Cannot compile a simple JNI program. See config.log for details.	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+Rmpfr	failed	configure.orig: error: MPFR Library must be at least version 3.0.0, see README	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+RMySQL	failed	/usr/include/mysql/mysql_com.h:1116:10: fatal error: 'mysql/udf_registration_types.h' file not found	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+rootSolve	built	1.8.2.4	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+RPostgres	failed	wasm-ld: error: unknown file type: /usr/lib/x86_64-linux-gnu/libpq.so	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+RPostgreSQL	failed	conftest.c:1:10: fatal error: 'libpq-fe.h' file not found	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+rstan	built	2.32.7	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+rstanarm	failed	wasm-ld: error: unknown file type: /root/R/x86_64-pc-linux-gnu-library/4.6/RcppParallel/lib/libtbb.so	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+rsvg	failed	<stdin>:1:10: fatal error: 'librsvg/rsvg.h' file not found	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+stringfish	built	0.19.2	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+tcltk2	built	1.6.1	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+webfakes	failed	wasm-ld: error: duplicate symbol: mbed_sslctx_init	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+websocket	failed	/root/R/x86_64-pc-linux-gnu-library/4.6/AsioHeaders/include/asio/detail/tss_ptr.hpp:29:3: error: Only Windows and POSIX are supported!	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+xlsx	blocked	dependency rJava did not build	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+xlsxjars	blocked	dependency rJava did not build	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
+XML	failed	configure.orig: error: "libxml not found"	2026-10-24T05:59Z	https://github.com/Prolytiq/r-wasm-pkgs/actions/runs/40066122852
