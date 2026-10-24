@@ -145,12 +145,14 @@ jobs:
           echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
           # Missing = closure members not already listed in `packages` (keep file order, append).
           grep -vxF -f <(sed 's/[[:space:]]*$//' packages | grep -v '^$') /tmp/closure.txt > /tmp/missing.txt || true
-          echo "missing=$(wc -l < /tmp/missing.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
+          # Non-numeric status on purpose: Actions expressions coerce a skipped step's
+          # null output to 0, so `== '0'` would match when this step never ran.
+          if [ -s /tmp/missing.txt ]; then echo "status=missing"; else echo "status=complete"; fi >> "$GITHUB_OUTPUT"
           echo "closure=$(wc -l < /tmp/closure.txt | tr -d ' ')" >> "$GITHUB_OUTPUT"
           echo "Closure:"; cat /tmp/closure.txt; echo "Missing:"; cat /tmp/missing.txt
 
       - name: Nothing to add
-        if: steps.closure.outputs.missing == '0'
+        if: steps.closure.outputs.status == 'complete'
         env:
           PKGS: ${{ steps.parse.outputs.pkgs }}
         run: |
@@ -160,7 +162,7 @@ jobs:
           gh issue close "$ISSUE" --reason completed
 
       - name: Commit and push to main
-        if: steps.closure.outputs.missing != '0' && steps.closure.outputs.missing != ''
+        if: steps.closure.outputs.status == 'missing'
         id: commit
         env:
           PKGS: ${{ steps.parse.outputs.pkgs }}
